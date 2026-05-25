@@ -1,19 +1,20 @@
 name: e2e
 
-# Gated end-to-end test: spins up a real Plane CE instance, builds the
-# plane-tug image, and drives an issue change through the webhook → SSE
-# round-trip. Slow (~3 min cold) and pulls multi-hundred-MB images, so
-# this does not run on every push.
+# End-to-end test: spins up a real Plane CE instance, builds the
+# plane-tug image, and drives an issue change through the
+# webhook → SSE round-trip. Roughly four minutes on a cold cache;
+# runs on every push and pull request because the regressions it
+# catches (Plane payload shape, HMAC roundtrip, SSRF allowlist,
+# compose-network DNS) are not visible in unit or in-process
+# integration tests.
 #
-# Triggers:
-#   - workflow_dispatch (manual "Run workflow" button)
-#   - pull_request_target labelled `run-e2e` (a maintainer adds the
-#     label to opt a PR in)
+# workflow_dispatch stays available for manual reruns.
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
-    types: [labeled, synchronize]
 
 permissions:
   contents: read
@@ -22,9 +23,6 @@ jobs:
   e2e:
     name: docker-compose e2e
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'run-e2e')
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
