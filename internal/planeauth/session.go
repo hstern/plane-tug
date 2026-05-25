@@ -72,7 +72,7 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) error {
 	meURL.Path = v.mePath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, meURL.String(), nil)
 	if err != nil {
-		return fmt.Errorf("%w: build request: %v", ErrUpstreamUnavailable, err)
+		return fmt.Errorf("%w: build request: %w", ErrUpstreamUnavailable, err)
 	}
 	for _, c := range cookies {
 		req.AddCookie(c)
@@ -80,7 +80,7 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) error {
 	req.Header.Set("Accept", "application/json")
 	resp, err := v.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUpstreamUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUpstreamUnavailable, err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)

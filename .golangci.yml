@@ -34,8 +34,12 @@ linters:
     gosec:
       excludes:
         # G304: file inclusion via variable. We deliberately read user-provided
-        # config paths (--config flag); the path is the operator's input.
+        # config paths; the path is the operator's input.
         - G304
+        # G101: hardcoded credentials. False-positive on identifiers like
+        # envWebhookSecret whose value is the *name* of an environment
+        # variable, not a credential.
+        - G101
     nolintlint:
       require-explanation: true
       require-specific: true
