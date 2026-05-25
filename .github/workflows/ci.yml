@@ -143,16 +143,21 @@ jobs:
         if: always()
         run: bash test/e2e-docker/run.sh down
 
-  # Publish on push to main (rolling `:latest`, `:main`, `:sha-<short>`)
-  # and on v* tag pushes (semver tags + floating major/major.minor on the
-  # highest semver tag). Never on PRs. Retag the build-image artifact
-  # rather than rebuild — the bytes published are the bytes the e2e job
-  # just validated.
+  # Publish retags the build-image artifact (no rebuild — same bytes the
+  # e2e job just validated).
+  #
+  #   - PRs:           :pr-<num>, :sha-<short>
+  #   - push to main:  :main, :latest, :sha-<short>
+  #   - v* tag push:   :vX.Y.Z + (if highest) :vX.Y, :vX, :sha-<short>
+  #
+  # PR publishing lets reviewers `docker pull` the exact image built
+  # from the branch instead of rebuilding locally. The per-tag
+  # `enable=` predicates below keep `:latest` and floating semver tags
+  # off PRs even though the job itself runs.
   publish:
     name: publish
     needs: [lint, build-image, e2e]
     if: |
-      github.event_name != 'pull_request' &&
       needs.e2e.result == 'success' &&
       needs.lint.result == 'success'
     runs-on: ubuntu-latest
@@ -196,6 +201,7 @@ jobs:
           flavor: latest=false
           tags: |
             type=ref,event=branch
+            type=ref,event=pr
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ steps.highest.outputs.yes == 'true' }}
