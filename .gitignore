@@ -12,3 +12,6 @@ coverage.html
 # Editor / OS
 .DS_Store
 *.swp
+
+# E2E orchestrator state
+test/e2e-docker/.seed-info.json

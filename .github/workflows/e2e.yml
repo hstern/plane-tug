@@ -1,0 +1,54 @@
+name: e2e
+
+# Gated end-to-end test: spins up a real Plane CE instance, builds the
+# plane-tug image, and drives an issue change through the webhook → SSE
+# round-trip. Slow (~3 min cold) and pulls multi-hundred-MB images, so
+# this does not run on every push.
+#
+# Triggers:
+#   - workflow_dispatch (manual "Run workflow" button)
+#   - pull_request_target labelled `run-e2e` (a maintainer adds the
+#     label to opt a PR in)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: docker-compose e2e
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-e2e')
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+
+      - name: docker compose version
+        run: docker compose version
+
+      - name: bring up Plane CE + plane-tug + seed
+        run: bash test/e2e-docker/run.sh up
+
+      - name: run e2e tests
+        run: go test -tags e2e -count=1 -v ./test/e2e-docker/...
+
+      - name: dump plane-api logs on failure
+        if: failure()
+        run: |
+          docker compose -f test/e2e-docker/compose.yaml logs --tail=200 plane-api
+          docker compose -f test/e2e-docker/compose.yaml logs --tail=200 plane-worker
+          docker compose -f test/e2e-docker/compose.yaml logs --tail=200 plane-tug
+
+      - name: tear down
+        if: always()
+        run: bash test/e2e-docker/run.sh down
