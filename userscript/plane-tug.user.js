@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         plane-tug
 // @namespace    https://github.com/hstern/plane-tug
-// @version      0.1.0
+// @version      0.1.1
 // @description  Push-driven refresh for Plane list views. Replaces a timer with an SSE stream from a plane-tug bridge.
-// @match        https://plane.example.com/*
+// @match        https://plane.stern.ca/*
 // @run-at       document-idle
 // @grant        none
 // @homepageURL  https://github.com/hstern/plane-tug
@@ -75,14 +75,18 @@
 
   function userIsBusy() {
     const el = document.activeElement;
-    if (el) {
+    if (el && el !== document.body) {
       const tag = el.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
       if (el.isContentEditable) return true;
       if (el.closest('.ProseMirror')) return true;
+      // Headlessui surfaces (Menu/Listbox/Combobox/Popover) — only treat as
+      // busy when focus is inside one. A bare `[data-headlessui-state="open"]`
+      // selector also matches inert Disclosure sections that Plane leaves
+      // open permanently in the sidebar, which would suppress every reload.
+      if (el.closest('[data-headlessui-state="open"]')) return true;
     }
     if (document.querySelector('[role="dialog"]:not([aria-hidden="true"])')) return true;
-    if (document.querySelector('[data-headlessui-state="open"]')) return true;
     return false;
   }
 
