@@ -1,0 +1,33 @@
+# Caddy reverse-proxy snippet for plane-tug.
+#
+# Add inside the site block for your Plane host, alongside the existing
+# reverse_proxy directives that route Plane itself. The bridge must live
+# at the same origin as Plane so the browser hands Plane's session cookie
+# along automatically.
+#
+# `flush_interval -1` is mandatory: without it Caddy buffers the proxied
+# response and the SSE stream stalls.
+
+plane.example.com {
+    # … your existing Plane reverse_proxy / handle blocks live here …
+
+    handle /live/* {
+        uri strip_prefix /live
+        reverse_proxy plane-tug:8080 {
+            flush_interval -1
+        }
+    }
+}
+
+# Sanity-check before going live:
+#
+#   curl -N https://plane.example.com/live/healthz
+#       # → 200 OK and "ok\n", connection closes immediately.
+#
+#   curl -N -b 'session=…' \
+#       'https://plane.example.com/live/events?project=…uuid…'
+#       # → 200 OK, headers include "Content-Type: text/event-stream",
+#       #   then ":connected\n\n" and ":keepalive\n\n" every 15 s.
+#
+# If either command's body trickles out a delay, Caddy is still buffering
+# — re-check the flush_interval directive.

@@ -1,0 +1,12 @@
+.git/
+.github/
+.idea/
+.claude/
+deploy/
+userscript/
+*.md
+LICENSE
+.editorconfig
+.gitignore
+.dockerignore
+.golangci.yml

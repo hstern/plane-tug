@@ -1,0 +1,52 @@
+# Podman quadlet for plane-tug.
+#
+# Drop this file under /etc/containers/systemd/ on a podman-host with the
+# quadlet generator enabled, run `systemctl daemon-reload`, and then
+# `systemctl start plane-tug`. The unit name systemd creates is
+# `plane-tug.service`.
+#
+# Adjust to suit your deployment:
+#   - Image: change to your registry / tag once you publish a build.
+#   - Network: join the same podman network as your Plane containers
+#     (so the bridge can reach Plane's web container by name) and your
+#     reverse-proxy network (so the proxy can reach the bridge).
+#   - EnvironmentFile: where the webhook secret lives. The file must be
+#     mode 0600 and owned by root; it holds the HMAC secret that Plane
+#     minted when the workspace webhook was created.
+#   - PLANE_TUG_PLANE_BASE_URL: internal-cluster URL of Plane's web/api
+#     container (typically http://plane-web:3000 or similar — check
+#     your Plane compose file for the service name).
+
+[Unit]
+Description=plane-tug — webhook→SSE bridge for Plane
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/hstern/plane-tug:0
+ContainerName=plane-tug
+
+# Bind these to your actual networks.
+Network=plane.network
+# Network=proxy.network
+
+# Loaded by the systemd-side EnvironmentFile= directive; not interpreted
+# by podman. The file must define PLANE_TUG_WEBHOOK_SECRET=... and
+# PLANE_TUG_PLANE_BASE_URL=... (and optionally PLANE_TUG_LOG_LEVEL).
+EnvironmentFile=/etc/plane-tug/plane-tug.env
+
+# Listen on the default port inside the container; the reverse proxy
+# reaches it by container name on the shared network — no host port
+# publish needed.
+PublishPort=
+
+# Security hardening — the binary needs no special privileges.
+NoNewPrivileges=true
+ReadOnly=true
+
+[Service]
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target default.target

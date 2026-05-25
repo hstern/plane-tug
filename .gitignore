@@ -1,0 +1,14 @@
+# Compiled output
+/plane-tug
+/dist/
+/bin/
+
+# Test artefacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor / OS
+.DS_Store
+*.swp
