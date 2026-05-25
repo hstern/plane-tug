@@ -61,8 +61,18 @@ wait_for_bridge() {
 }
 
 cmd_up() {
-  log "bringing up Plane CE + plane-tug (cold cache: ~90s)"
-  compose up -d --build
+  log "bringing up Plane CE + plane-tug"
+  # In CI, PLANE_TUG_IMAGE points at a freshly-pushed ghcr.io ref and the
+  # build-image job has already produced the bytes we want to exercise.
+  # Local runs (env var unset) build from this checkout so iteration is
+  # one command.
+  if [[ -z "${PLANE_TUG_IMAGE:-}" ]]; then
+    log "PLANE_TUG_IMAGE unset; building plane-tug from this checkout"
+    compose build plane-tug
+  else
+    log "using PLANE_TUG_IMAGE=$PLANE_TUG_IMAGE"
+  fi
+  compose up -d
   wait_for_api
   wait_for_bridge
   cmd_seed

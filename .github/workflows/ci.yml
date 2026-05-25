@@ -3,55 +3,216 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+  # build-image + publish push to ghcr; declared at workflow level so both
+  # jobs inherit. lint + e2e jobs only read.
+  packages: write
 
 jobs:
-  build:
-    name: build / vet / test
+  # Multi-stage Docker build. The Dockerfile's `test` stage runs go vet,
+  # go test -race, and govulncheck against the source the runtime binary
+  # is built from. If tests fail there, the runtime image is never built
+  # or pushed, so the e2e and publish jobs (which consume the pushed
+  # image) never run. The "publish what we tested" property is enforced
+  # by the build pipeline, not by job-level dependencies.
+  build-image:
+    name: build-image
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: ["1.26.x"]
+    timeout-minutes: 15
+    outputs:
+      image: ${{ steps.refs.outputs.image }}
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
         with:
-          go-version: ${{ matrix.go-version }}
-          check-latest: true
-      - name: go vet
-        run: go vet ./...
-      - name: go test (race)
-        run: go test -race -count=1 ./...
-      - name: go build
-        run: go build ./...
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image refs
+        id: refs
+        run: |
+          # Docker refs must be lowercase; GH allows mixed-case repo names.
+          owner_repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${owner_repo}:ci-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      # Test stage runs on the build platform (amd64) so go test -race
+      # runs natively, not under qemu. Cache shared with the runtime build
+      # below so the source-layer build is reused.
+      - name: Test (Dockerfile `test` stage)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: test
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build + push multi-arch runtime
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.refs.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   lint:
-    name: golangci-lint
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
-          check-latest: true
+          go-version: '1.26'
+          cache: true
       - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
 
-  vuln:
-    name: govulncheck
+  # End-to-end against a real Plane CE container. Pulls the image the
+  # build-image job just pushed (rather than rebuilding), so the bytes
+  # exercised here are the bytes the publish job will retag.
+  e2e:
+    name: e2e
+    needs: build-image
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
-          check-latest: true
-      - name: install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: govulncheck
-        run: govulncheck ./...
+          go-version: '1.26'
+          cache: true
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ghcr.io intermittently returns "denied: denied" on freshly-pushed
+      # multi-arch manifests for a few seconds after the push. Re-login
+      # and retry up to 6 times before giving up.
+      - name: Pull bridge image (with retry against ghcr transient denies)
+        env:
+          IMAGE: ${{ needs.build-image.outputs.image }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6; do
+            if docker pull "$IMAGE"; then
+              echo "pulled after $i attempt(s)"; exit 0
+            fi
+            echo "pull failed; re-authenticating and retrying in $((i*5))s"
+            echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+            sleep $((i*5))
+          done
+          echo "ERROR: docker pull never succeeded"
+          exit 1
+
+      - name: Bring up Plane CE + plane-tug + seed
+        env:
+          PLANE_TUG_IMAGE: ${{ needs.build-image.outputs.image }}
+        run: bash test/e2e-docker/run.sh up
+
+      - name: Run e2e tests
+        run: go test -tags e2e -count=1 -v ./test/e2e-docker/...
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          docker compose -f test/e2e-docker/compose.yaml logs --tail=200 plane-api
+          docker compose -f test/e2e-docker/compose.yaml logs --tail=200 plane-worker
+          docker compose -f test/e2e-docker/compose.yaml logs --tail=200 plane-tug
+
+      - name: Tear down
+        if: always()
+        run: bash test/e2e-docker/run.sh down
+
+  # Publish on push to main (rolling `:latest`, `:main`, `:sha-<short>`)
+  # and on v* tag pushes (semver tags + floating major/major.minor on the
+  # highest semver tag). Never on PRs. Retag the build-image artifact
+  # rather than rebuild — the bytes published are the bytes the e2e job
+  # just validated.
+  publish:
+    name: publish
+    needs: [lint, build-image, e2e]
+    if: |
+      github.event_name != 'pull_request' &&
+      needs.e2e.result == 'success' &&
+      needs.lint.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Need full tag history so the "highest semver" step can compare
+          # the pushed ref against every prior release tag.
+          fetch-depth: 0
+
+      # Guard floating `{{major}}` and `{{major}}.{{minor}}` tags against
+      # backport pushes. We only emit those when the pushed tag is the
+      # highest semver in the repo; backport publishes still get the
+      # exact `:0.1.5` and `:sha-<short>` tags but leave the floating
+      # tags pinned.
+      - name: Is this the highest semver tag?
+        id: highest
+        run: |
+          set -euo pipefail
+          latest=$(git tag -l 'v*' | sort -V | tail -n1)
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" = "$latest" ]; then
+            echo "yes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "yes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.highest.outputs.yes == 'true' }}
+            type=semver,pattern={{major}},enable=${{ steps.highest.outputs.yes == 'true' }}
+            type=sha
+
+      - name: Retag build-image with release tags
+        env:
+          SRC: ${{ needs.build-image.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            args+=(--tag "$tag")
+          done <<< "$TAGS"
+          echo "retagging $SRC →"
+          printf '  %s\n' "${args[@]}"
+          docker buildx imagetools create "${args[@]}" "$SRC"

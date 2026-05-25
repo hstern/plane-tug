@@ -168,13 +168,17 @@ services:
     image: traefik/whoami:v1.10
     command: ["--port", "80"]
 
-  # The bridge under test. Built from the repo root via the multi-stage
-  # Dockerfile. The webhook secret matches what seed.py writes into the
-  # Plane database when it creates the webhook row.
+  # The bridge under test. By default builds from this checkout via the
+  # multi-stage Dockerfile (local development). CI overrides
+  # PLANE_TUG_IMAGE to a ghcr.io ref pushed by the build-image job so the
+  # bytes the e2e job tests are the bytes publish will retag.
   plane-tug:
+    image: ${PLANE_TUG_IMAGE:-ghcr.io/hstern/plane-tug:local}
     build:
       context: ../..
       dockerfile: Dockerfile
+      tags:
+        - ghcr.io/hstern/plane-tug:local
     environment:
       PLANE_TUG_WEBHOOK_SECRET: e2e-known-secret-not-random
       PLANE_TUG_PLANE_BASE_URL: http://fake-plane:80
